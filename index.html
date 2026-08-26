@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>铝型材家具设计器 · 原型</title>
+  <!--
+    ============================================================
+    这是"铝型材家具设计器"的原型：单文件、纯前端、零依赖。
+    直接双击用浏览器打开就能用，不需要服务器、不需要安装任何东西。
+
+    代码结构（从上到下）：
+      1. CSS    —— 只管外观，删掉页面照样能用（这是刻意的设计决策）
+      2. 型材目录 —— 数据。以后会抽出去变成 catalog.json
+      3. 参数化引擎 —— 只做计算，不碰页面。这样以后加 3D 预览时能直接复用
+      4. 页面渲染 —— 把计算结果画到屏幕上
+    ============================================================
+  -->
+  <style>
+    /* 为什么用 CSS 变量：改主题色只需要改这一处 */
+    :root {
+      --brand: #e8590c;        /* 主色：铝的橙（型材厂常见的安全橙） */
+      --warn: #d9480f;
+      --bg: #f8f9fa;
+      --line: #dee2e6;
+      --text: #343a40;
+    }
+    * { box-sizing: border-box; } /* 让 padding 不撑大盒子，新手最常踩的坑 */
+    body {
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 24px;
+      max-width: 860px;      /* 限制行宽，阅读舒服 */
+      margin-inline: auto;   /* 居中 */
+    }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .sub { color: #868e96; font-size: 13px; margin-bottom: 20px; }
+    .card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 16px;
+    }
+    .card h2 { font-size: 15px; margin: 0 0 12px; color: var(--brand); }
+
+    /* 表单：用 grid 排成两列，窄屏自动变一列（响应式零成本） */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px 20px;
+    }
+    label { display: block; font-size: 13px; margin-bottom: 4px; }
+    input, select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    /* 只读输出框：灰色底告诉用户"这里不用填" */
+    input[readonly] { background: #f1f3f5; }
+
+    button {
+      margin-top: 16px;
+      width: 100%;
+      padding: 12px;
+      font-size: 15px;
+      color: #fff;
+      background: var(--brand);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer; /* 手型光标，暗示可点 */
+    }
+    button:hover { filter: brightness(1.08); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: left; }
+    th { color: #868e96; font-weight: 500; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; } /* 等宽数字，列对齐 */
+    tfoot td { font-weight: 600; border-bottom: none; }
+
+    /* 告警条 */
+    .msg { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
+    .msg.ok   { background: #ebfbee; color: #2b8a3e; }
+    .msg.warn { background: #fff4e6; color: var(--warn); }
+    .msg.err  { background: #ffe3e3; color: #c92a2a; }
+
+    .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; font-size: 14px; }
+    .kv div { display: flex; justify-content: space-between; border-bottom: 1px dashed var(--line); padding: 4px 0; }
+    .kv b { font-variant-numeric: tabular-nums; }
+
+    ol.steps { font-size: 14px; line-height: 1.8; padding-left: 20px; }
+    svg text { font-size: 11px; fill: #495057; }
+
+    /* 初始隐藏结果区：没算过就显示一片空白很奇怪，所以默认 display:none */
+    #result { display: none; }
+  </style>
+</head>
+<body>
+
+  <h1>🔩 铝型材家具设计器</h1>
+  <div class="sub">原型 v0.1 —— 高架床 · 输入人的尺寸，自动算结构、出 BOM 切割单</div>
+
+  <!-- ============ 输入区：一个 card 一个主题，视觉上分块 ============ -->
+  <div class="card">
+    <h2>① 你的条件</h2>
+    <div class="form-grid">
+      <div>
+        <label for="height">身高（cm）</label>
+        <input id="height" type="number" value="175" min="120" max="220">
+      </div>
+      <div>
+        <label for="roomH">房间净高（cm）</label>
+        <input id="roomH" type="number" value="280" min="220" max="450">
+      </div>
+      <div>
+        <label for="bedW">床宽（cm）</label>
+        <input id="bedW" type="number" value="100" min="80" max="150">
+      </div>
+      <div>
+        <label for="underUse">床下做什么</label>
+        <!-- 每个选项的 value 就是引擎里的姿态代码，见 POSTURE 表 -->
+        <select id="underUse">
+          <option value="sit">办公 / 吃饭 / 玩（坐着）</option>
+          <option value="recline">看剧 / 休闲（半躺）</option>
+          <option value="lie">下层也睡人（双层床）</option>
+        </select>
+      </div>
+    </div>
+    <button id="go">生成方案</button>
+  </div>
+
+  <!-- ============ 结果区：JS 填充内容 ============ -->
+  <div id="result">
+    <div class="card">
+      <h2>② 尺寸结论</h2>
+      <div id="alert"></div>
+      <div class="kv" id="dims"></div>
+    </div>
+
+    <div class="card">
+      <h2>③ 侧视比例图</h2>
+      <div id="svgBox"></div>
+    </div>
+
+    <div class="card">
+      <h2>④ BOM 切割单</h2>
+      <div id="bom"></div>
+    </div>
+
+    <div class="card">
+      <h2>⑤ 拼装步骤</h2>
+      <ol class="steps" id="steps"></ol>
+    </div>
+  </div>
+
+<script>
+/* ============================================================
+ * 一、型材目录（数据层）
+ * ------------------------------------------------------------
+ * 为什么数据单独放最上面：型材规格、价格会经常变，
+ * 改数据不该碰计算逻辑。MVP 阶段抽成 catalog.json，
+ * 用 fetch 加载 —— 那时才需要起本地服务器（file:// 会跨域）。
+ *
+ * 重量单位 kg/m，价格单位 元/m（电商均价，量裁下单时再核）
+ * ============================================================ */
+const CATALOG = {
+  profiles: {
+    // 4040：立柱和床框主梁。40 系列是 DIY 高架床的主流，够硬、配件最全
+    "4040": { name: "欧标 4040 铝型材", kgPerM: 1.62, yuanPerM: 24 },
+    // 2020：床板中梁。只受弯矩不受大载荷，轻且省一半钱
+    "2020": { name: "欧标 2020 铝型材", kgPerM: 0.52, yuanPerM: 8 },
+  },
+  parts: {
+    corner:   { name: "4040 角槽连接件（含螺栓螺母）", unit: "套", yuan: 3.5 },
+    tNut:     { name: "2020 专用 T 型螺母+内六角螺栓", unit: "套", yuan: 1.0 },
+    foot:     { name: "可调平脚杯 M8", unit: "个", yuan: 2.5 },
+    tool:     { name: "内六角扳手（配套尺寸）", unit: "把", yuan: 5.0 },
+  },
+  // 床板和床垫不属于型材体系，但总高计算需要它们
+  boardThk: 1.8,   // 床板厚度 cm（松木指接板常见 18mm）
+  mattress: 15,    // 床垫厚度 cm（总高与护栏高度要考虑它）
+  guardRail: 25,   // 护栏最小高度 cm（床垫面上方至少留 25cm 防滚落）
+};
+
+/* ============================================================
+ * 二、参数化引擎（计算层）
+ * ------------------------------------------------------------
+ * 纯函数：进参数、出结果，完全不碰 DOM。
+ * 好处：将来接 Three.js 3D 预览或 LLM 时，直接调这层就行。
+ * ============================================================ */
+
+// 姿态表：床下净空怎么算。经验系数来自人体工学常识数据
+// - 坐：头顶高 ≈ 身高 × 0.52，再加 10cm 活动余量（不至于时刻挺直腰）
+// - 半躺：躯干倾斜，需要 ≈ 身高 × 0.62，余量 8cm
+// - 躺（下铺睡人）：要能坐起+翻身，取固定 95cm（参考双层床国标）
+const POSTURE = {
+  sit:     { label: "坐（办公/吃饭/玩）", clear: h => Math.round(h * 0.52 + 10) },
+  recline: { label: "半躺（看剧/休闲）",  clear: h => Math.round(h * 0.62 + 8) },
+  lie:     { label: "躺（双层床）",       clear: () => 95 },
+};
+
+/**
+ * 主计算函数：输入用户条件，输出完整设计方案
+ * @param {number} height 身高 cm
+ * @param {number} roomH  房间净高 cm
+ * @param {number} bedW   床宽 cm
+ * @param {string} use    床下用途（POSTURE 的 key）
+ */
+function computeDesign(height, roomH, bedW, use) {
+  // --- 床的长度：躺平不顶头，身高 + 15cm 余量（被子枕头会占地方）---
+  const bedL = height + 15;
+
+  // --- 床下净空：由姿态决定 ---
+  const clear = POSTURE[use].clear(height);
+
+  // --- 关键截面（侧视图上从下到上）---
+  const beam = 4;                                  // 4040 梁高 4cm
+  const bedSurface = clear + beam + CATALOG.boardThk; // 床板面高度
+  const totalH = bedSurface + CATALOG.guardRail;   // 结构总高（到护栏顶）
+
+  // --- 层高校验：这是我们最重要的"防翻车"逻辑 ---
+  // 余量 < 15cm 挤得慌；结构比房间还高就是直接报错
+  const margin = roomH - totalH;
+  let level, alertText;
+  if (margin < 0) {
+    level = "err";
+    alertText = `❌ 放不下！结构总高 ${totalH}cm 已超过房间净高 ${roomH}cm。建议：床下改"躺"姿态、或房间太矮不适合高架床。`;
+  } else if (margin < 15) {
+    level = "warn";
+    alertText = `⚠️ 能装但很挤：顶部只剩 ${margin}cm。上床会压头，除非你不装护栏或接受半坐姿势，否则建议降净空。`;
+  } else {
+    level = "ok";
+    alertText = `✅ 可行！顶部余量 ${margin}cm，上床能坐直。`;
+  }
+
+  // --- 中梁：2020 沿床宽方向排，间距不超 70cm 床板才不下沉 ---
+  // 数量公式：间距 = 床长/(n+1) ≤ 70 → n ≥ 床长/70 - 1，至少 2 根
+  const midBeams = Math.max(2, Math.ceil(bedL / 70) - 1);
+  const midBeamLen = bedW - 4; // 两端嵌进 4040 长梁之间，各让 2cm（半根型材宽）
+
+  // --- BOM 逐条算 ---
+  const bom = [];
+  const addProfile = (code, lenCm, qty) => {
+    const p = CATALOG.profiles[code];
+    const meters = (lenCm / 100) * qty;
+    bom.push({
+      name: p.name, spec: `L=${lenCm}cm`, qty, unit: "根",
+      meters, kg: +(meters * p.kgPerM).toFixed(1),
+      yuan: Math.round(meters * p.yuanPerM),
+    });
+  };
+  const addPart = (key, qty) => {
+    const p = CATALOG.parts[key];
+    bom.push({ name: p.name, spec: "", qty, unit: p.unit,
+               meters: 0, kg: 0, yuan: Math.round(qty * p.yuan) });
+  };
+
+  addProfile("4040", totalH, 4);          // 立柱 ×4：整根到顶，不拼接（拼接点是软肋）
+  addProfile("4040", bedL, 2);            // 长边梁 ×2：承床长方向
+  addProfile("4040", bedW, 2);            // 短边梁 ×2
+  addProfile("2020", midBeamLen, midBeams);
+  addPart("corner", 8 + midBeams * 2);    // 柱梁节点 8 + 每根中梁两端各 1
+  addPart("tNut", midBeams * 2);          // 中梁若用 T 螺母方案的备件
+  addPart("foot", 4);                     // 四柱脚杯，地面不平全靠它
+  addPart("tool", 1);
+
+  const totalM = +(bom.reduce((s, i) => s + i.meters, 0)).toFixed(1);
+  const totalKg = +(bom.reduce((s, i) => s + i.kg, 0)).toFixed(1);
+  const totalYuan = bom.reduce((s, i) => s + i.yuan, 0);
+
+  // --- 拼装步骤：顺序由结构逻辑决定（先平着拼框架再立起来，一个人也能装）---
+  const steps = [
+    `下单切割：立柱 4040×${totalH}cm×4 根，长梁 ×2（${bedL}cm），短梁 ×2（${bedW}cm），中梁 2020×${midBeamLen}cm×${midBeams} 根。要求卖家切口去毛刺。`,
+    `在地上平铺床框：2 长 + 2 短用角槽连接件拼成 ${bedL}×${bedW}cm 矩形，对角线误差控制在 5mm 内（不方的话床板会翘）。`,
+    `装中梁：${midBeams} 根 2020 均布进床框，间距约 ${Math.round(bedL / (midBeams + 1))}cm，两端固定。`,
+    `立柱预装：4 根立柱竖起，与床框四角连接。此时整体很晃是正常的，还没成刚性结构。`,
+    `打斜撑校准（可选但强烈建议）：对角拉临时木条固定方正，拧紧全部螺栓。`,
+    `抬到目标位置，四角装脚杯调平：床不晃 = 载荷均匀落地，这一步决定使用寿命。`,
+    `铺床板（18mm 指接板，${bedL}×${bedW}cm，可让商家裁成 2~3 块方便搬运），对缝落在中梁上。`,
+    `护栏检查：床垫面到护栏顶必须 ≥ ${CATALOG.guardRail}cm，不够就加高护栏再睡人。`,
+  ];
+
+  return { bedL, bedW, clear, bedSurface, totalH, margin, level, alertText,
+           midBeams, bom, totalM, totalKg, totalYuan, steps, use };
+}
+
+/* ============================================================
+ * 三、渲染层：把引擎结果变成页面
+ * ============================================================ */
+
+// $ 是 document.querySelector 的简写，JS 里常见约定
+const $ = sel => document.querySelector(sel);
+
+// 侧视比例图：字符串拼 SVG，最简单直接，原型够用
+function buildSVG(d) {
+  // 画布逻辑坐标：1cm = 3px，横向画床侧面 + 房间边界
+  const s = 3;
+  const W = (d.bedL + 30) * s, H = d.roomHSetting * s;
+  const x0 = 15 * s, yFloor = H - 10;          // 床左端 x、地板 y
+  const top = yFloor - d.totalH * s;           // 护栏顶 y（SVG y 轴向下，越小越高）
+  const beamY = yFloor - d.bedSurface * s;     // 床板面 y
+  // 立柱：画在床两端
+  const px = 4 * s;
+  // 人形剪影（坐姿示意）：头-躯干-腿三段线，够表意就行
+  const person = d.use === "lie" ? "" : `
+    <circle cx="${x0 + 40 * s}" cy="${yFloor - (d.clear - 25) * s}" r="${9 * s / 3}" fill="#adb5bd"/>
+    <rect x="${x0 + 35 * s}" y="${yFloor - (d.clear - 22) * s}" width="${10 * s}" height="${40 * s}" rx="4" fill="#adb5bd"/>
+    <rect x="${x0 + 35 * s}" y="${yFloor - 40 * s * 0.9}" width="${22 * s}" height="${7 * s}" rx="3" fill="#adb5bd"/>`;
+
+  return `
+  <svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:640px">
+    <!-- 房间：地板 + 左墙 + 顶 -->
+    <line x1="0" y1="${yFloor}" x2="${W}" y2="${yFloor}" stroke="#868e96" stroke-width="2"/>
+    <line x1="${x0 - 15 * s}" y1="${yFloor}" x2="${x0 - 15 * s}" y2="${10}" stroke="#868e96" stroke-dasharray="6 4"/>
+    <line x1="${x0 - 15 * s}" y1="10" x2="${W}" y2="10" stroke="#868e96" stroke-dasharray="6 4"/>
+    <text x="${x0 - 15 * s + 4}" y="${yFloor / 2}" transform="rotate(-90 ${x0 - 15 * s + 4} ${yFloor / 2})">房间净高 ${d.roomHSetting}cm</text>
+
+    <!-- 床框（侧视看到长梁截面）和立柱 -->
+    <rect x="${x0}" y="${top}" width="${px}" height="${d.totalH * s}" fill="#e8590c" opacity="0.85"/>
+    <rect x="${x0 + d.bedL * s - px}" y="${top}" width="${px}" height="${d.totalH * s}" fill="#e8590c" opacity="0.85"/>
+    <rect x="${x0}" y="${beamY - CATALOG.boardThk * s - 4 * s}" width="${d.bedL * s}" height="${4 * s}" fill="#fd7e14"/>
+    <rect x="${x0}" y="${beamY - CATALOG.boardThk * s}" width="${d.bedL * s}" height="${CATALOG.boardThk * s}" fill="#a97142"/>
+    <!-- 床垫 + 护栏 -->
+    <rect x="${x0 + px}" y="${beamY - (CATALOG.boardThk + CATALOG.mattress) * s}" width="${d.bedL * s - 2 * px}" height="${CATALOG.mattress * s}" rx="4" fill="#ffe8cc"/>
+    <rect x="${x0}" y="${top}" width="${px * 2.5}" height="${CATALOG.guardRail * s}" fill="#fd7e14" opacity="0.4"/>
+    <rect x="${x0 + d.bedL * s - px * 2.5}" y="${top}" width="${px * 2.5}" height="${CATALOG.guardRail * s}" fill="#fd7e14" opacity="0.4"/>
+    ${person}
+
+    <!-- 尺寸标注：净空（左侧）和总高（右侧）-->
+    <line x1="${x0 - 20}" y1="${yFloor}" x2="${x0 - 20}" y2="${beamY}" stroke="#495057"/>
+    <text x="${x0 - 16}" y="${(yFloor + beamY) / 2}">净空 ${d.clear}</text>
+    <line x1="${x0 + d.bedL * s + 16}" y1="${yFloor}" x2="${x0 + d.bedL * s + 16}" y2="${top}" stroke="#495057"/>
+    <text x="${x0 + d.bedL * s + 20}" y="${(yFloor + top) / 2}">总高 ${d.totalH}</text>
+    <text x="${x0 + d.bedL * s / 2 - 30}" y="${yFloor - 6}">床长 ${d.bedL}cm</text>
+  </svg>`;
+}
+
+// BOM 表格：HTML 字符串模板（反引号），学 JS 必会
+function buildBOMTable(d) {
+  const rows = d.bom.map(i => `
+    <tr>
+      <td>${i.name}</td><td>${i.spec}</td>
+      <td class="num">${i.qty} ${i.unit}</td>
+      <td class="num">${i.meters ? i.meters + " m" : "—"}</td>
+      <td class="num">${i.kg ? i.kg + " kg" : "—"}</td>
+      <td class="num">¥${i.yuan}</td>
+    </tr>`).join("");
+  return `
+    <table>
+      <thead><tr><th>物料</th><th>规格</th><th>数量</th><th>米数</th><th>重量</th><th>估价</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="3">合计</td><td class="num">${d.totalM} m</td><td class="num">${d.totalKg} kg</td><td class="num">≈¥${d.totalYuan}</td></tr></tfoot>
+    </table>
+    <div style="font-size:12px;color:#868e96;margin-top:8px">价格为电商均估算，含床板不含床垫；下单前以商家报价为准。</div>`;
+}
+
+// 主流程：点按钮 → 读输入 → 算 → 渲染
+$("#go").addEventListener("click", () => {
+  // parseInt 比较严格，输入空或非数字会给 NaN，我们兜底成默认值
+  const height = parseInt($("#height").value) || 175;
+  const roomH  = parseInt($("#roomH").value) || 280;
+  const bedW   = parseInt($("#bedW").value) || 100;
+  const use    = $("#underUse").value;
+
+  const d = computeDesign(height, roomH, bedW, use);
+  d.roomHSetting = roomH;   // 画图需要房间高度，附带在结果上
+
+  // 结果区从隐藏变可见
+  $("#result").style.display = "block";
+
+  // 告警条：err/warn/ok 三种底色，对应上面的 CSS 类
+  $("#alert").innerHTML = `<div class="msg ${d.level}">${d.alertText}</div>`;
+
+  // 尺寸结论
+  $("#dims").innerHTML = `
+    <div><span>床长（身高等 +15）</span><b>${d.bedL} cm</b></div>
+    <div><span>床宽</span><b>${d.bedW} cm</b></div>
+    <div><span>床下净空（${POSTURE[d.use].label}）</span><b>${d.clear} cm</b></div>
+    <div><span>床板面高</span><b>${d.bedSurface} cm</b></div>
+    <div><span>结构总高（含护栏）</span><b>${d.totalH} cm</b></div>
+    <div><span>顶部余量</span><b>${d.margin} cm</b></div>
+    <div><span>中梁数量（2020）</span><b>${d.midBeams} 根</b></div>
+    <div><span>姿态假设</span><b>${POSTURE[d.use].label}</b></div>`;
+
+  $("#svgBox").innerHTML = buildSVG(d);
+  $("#bom").innerHTML = buildBOMTable(d);
+
+  // steps 是数组，map 成 <li> 再拼接，比 for 循环拼字符串清爽
+  $("#steps").innerHTML = d.steps.map(s => `<li>${s}</li>`).join("");
+});
+</script>
+</body>
+</html>
