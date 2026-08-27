@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>单品定制 · 流程模拟器</title>
+<!--
+  ============================================================
+  流程模拟器：演示"前面的选择决定后面的表单"这条规则链。
+  ① 点单品卡片 → ② 细节定制表单跟着变 → ③ 尺寸表单跟着变
+  → ④ 输出一份 JSON（这就是将来交给参数化引擎的东西）。
+
+  核心思想：所有"规则"都写在下面的 RULES 数据里，
+  渲染代码只负责照着 RULES 画表单，不认识任何具体家具。
+  加新单品 = 加一张规则卡，渲染代码一行不改。
+  ============================================================
+-->
+<style>
+  /* 为什么用 CSS 变量：改主题色只需要改这一处 */
+  :root { --brand:#e8590c; --bg:#f8f9fa; --line:#dee2e6; --text:#343a40; }
+  * { box-sizing: border-box; }
+  body {
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg); color:var(--text);
+    margin:0; padding:24px; max-width:860px; margin-inline:auto;
+  }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:#868e96; font-size:13px; margin-bottom:16px; }
+  .crumb { font-size:13px; color:#868e96; margin-bottom:14px; }
+  .crumb b { color:var(--brand); }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 20px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 12px; color:var(--brand); }
+  /* 卡片网格：minmax 让列数随屏宽自动增减，不用写媒体查询 */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px; }
+  .pick { border:1px solid var(--line); border-radius:8px; padding:12px; cursor:pointer; }
+  .pick:hover { border-color:var(--brand); }
+  .pick.on { border-color:var(--brand); background:#fff4e6; }
+  .pick b { display:block; font-size:15px; margin-bottom:4px; }
+  .pick em { font-style:normal; font-size:11px; color:#adb5bd; display:block; margin-bottom:4px; }
+  .pick span { font-size:12px; color:#868e96; }
+  .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px 20px; }
+  label { display:block; font-size:13px; margin-bottom:4px; }
+  input, select {
+    width:100%; padding:8px 10px; border:1px solid var(--line);
+    border-radius:6px; font-size:14px; background:#fff;
+  }
+  /* toggle 行：label 和 checkbox 横排 */
+  .toggle { display:flex; align-items:center; gap:8px; font-size:14px; margin:6px 0; }
+  .toggle input { width:auto; }
+  button {
+    margin-top:14px; margin-right:8px; padding:10px 16px; font-size:14px;
+    color:#fff; background:var(--brand); border:none; border-radius:8px; cursor:pointer;
+  }
+  button.ghost { background:#fff; color:var(--text); border:1px solid var(--line); }
+  button:hover { filter:brightness(1.05); }
+  pre { background:#f1f3f5; padding:12px; border-radius:8px; font-size:12.5px; overflow:auto; margin:0; }
+  /* hidden 属性遇上 display:grid 的子元素可能失效，兜底声明一次 */
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+
+<h1>🔩 单品定制 · 流程模拟器</h1>
+<div class="sub">点一遍走完全流程 —— 演示规则链：选了什么，后面就问什么</div>
+<div class="crumb" id="crumb"></div>
+
+<!-- 四个步骤各占一个 card，走到哪步显示哪步 -->
+<div class="card" id="step1">
+  <h2>① 单品种类</h2>
+  <div class="grid" id="typeGrid"></div>
+</div>
+
+<div class="card" id="step2" hidden>
+  <h2>② 细节定制</h2>
+  <div class="form-grid" id="detailForm"></div>
+  <button class="ghost" id="backTo1">← 重选家具</button>
+</div>
+
+<div class="card" id="step3" hidden>
+  <h2>③ 尺寸信息</h2>
+  <div class="form-grid">
+    <label class="toggle"><input type="radio" name="mode" value="body" checked> 身材推算（系统帮你算）</label>
+    <label class="toggle"><input type="radio" name="mode" value="exact"> 精确尺寸（你直接填）</label>
+  </div>
+  <!-- 两个模式共用同一组尺寸输入：推算按钮只是帮你把值填进去，想改随时改 -->
+  <div id="bodyBox">
+    <div class="form-grid" id="bodyForm" style="margin-top:12px"></div>
+    <button class="ghost" id="calcBtn">按身材推算尺寸</button>
+  </div>
+  <div id="dimBox">
+    <div class="form-grid" id="dimForm" style="margin-top:12px"></div>
+  </div>
+  <button id="toStep4">生成方案摘要 ↓</button>
+  <button class="ghost" id="backTo2">← 改细节</button>
+</div>
+
+<div class="card" id="step4" hidden>
+  <h2>④ 方案摘要（交给引擎的输入）</h2>
+  <pre id="summary"></pre>
+  <button class="ghost" id="restart">重新开始</button>
+</div>
+
+<script>
+/* ============================================================
+ * 一、规则数据 —— "表达规则"的本体
+ * ------------------------------------------------------------
+ * 每种单品一张规则卡，五个字段：
+ *   name/tagline  卡片上的名字和一句话
+ *   group         需求分区（睡觉 / 工作学习 / 收纳）
+ *   details       细节定制项（toggle 或 select）
+ *   bodyAsks      身材推算要问用户的信息
+ *   dims          尺寸项（精确模式直接填这些）
+ *   calc          推算函数：身材 + 细节 → 尺寸默认值
+ * ============================================================ */
+const RULES = {
+  bed: {
+    name:"普通床", tagline:"就要一张床，空间够", group:"睡觉",
+    details:[
+      { key:"headboard", label:"床头板", type:"toggle", def:false },
+      { key:"guard",     label:"护栏（防滚落）", type:"toggle", def:false },
+    ],
+    bodyAsks:[ { key:"height", label:"身高（cm）", def:175 } ],
+    dims:[
+      { key:"len", label:"床长（cm）", def:190 },
+      { key:"w",   label:"床宽（cm）", def:100 },
+      { key:"h",   label:"床架离地（cm）", def:30 },
+    ],
+    calc: b => ({ len: b.height + 15 }),   // 躺平不顶头：身高 + 15
+  },
+
+  loft: {
+    name:"高架床", tagline:"地方不够，把床抬高换空间", group:"睡觉",
+    details:[
+      { key:"guard",  label:"护栏", type:"toggle", def:true },
+      { key:"ladder", label:"爬梯位置", type:"select", options:["床尾","侧面"], def:"床尾" },
+      { key:"under",  label:"床下做什么", type:"select",
+        options:[["sit","坐着（办公/吃饭）"],["recline","半躺（看剧）"],["lie","下铺睡人"]],
+        def:"sit" },
+    ],
+    bodyAsks:[
+      { key:"height", label:"身高（cm）", def:175 },
+      { key:"roomH",  label:"房间净高（cm）", def:280 },
+    ],
+    dims:[
+      { key:"len",   label:"床长（cm）", def:190 },
+      { key:"w",     label:"床宽（cm）", def:100 },
+      { key:"clear", label:"床下净空（cm）", def:101 },
+      { key:"roomH", label:"房间净高（cm）", def:280 },
+    ],
+    calc: (b, d) => {
+      // 净空由姿态决定 —— 细节定制里选的"床下做什么"在这里生效
+      const clear = d.under === "lie" ? 95
+                  : d.under === "recline" ? Math.round(b.height * 0.62 + 8)
+                  : Math.round(b.height * 0.52 + 10);
+      return { len: b.height + 15, clear };
+    },
+  },
+
+  loftDesk: {
+    name:"上床下桌", tagline:"一个角落解决睡 + 学", group:"睡觉",
+    details:[
+      { key:"guard",  label:"护栏", type:"toggle", def:true },
+      { key:"ladder", label:"爬梯位置", type:"select", options:["床尾","侧面"], def:"侧面" },
+      { key:"under",  label:"床下用途", type:"select", options:[["sit","书桌（坐着）"],["recline","沙发（半躺）"]], def:"sit" },
+    ],
+    bodyAsks:[
+      { key:"height", label:"身高（cm）", def:175 },
+      { key:"roomH",  label:"房间净高（cm）", def:280 },
+    ],
+    dims:[
+      { key:"len",   label:"床长（cm）", def:190 },
+      { key:"w",     label:"床宽（cm）", def:100 },
+      { key:"clear", label:"床下净空（cm）", def:101 },
+      { key:"roomH", label:"房间净高（cm）", def:280 },
+    ],
+    calc: (b, d) => {
+      const clear = d.under === "recline" ? Math.round(b.height * 0.62 + 8)
+                                          : Math.round(b.height * 0.52 + 10);
+      return { len: b.height + 15, clear };
+    },
+  },
+
+  desk: {
+    name:"直桌", tagline:"就一张桌", group:"工作学习",
+    details:[
+      { key:"back",   label:"背板（挡墙/加固）", type:"toggle", def:false },
+      { key:"cable",  label:"走线孔", type:"toggle", def:true },
+      { key:"tray",   label:"键盘托", type:"toggle", def:false },
+    ],
+    bodyAsks:[ { key:"height", label:"身高（cm）", def:175 } ],
+    dims:[
+      { key:"len", label:"桌长（cm）", def:140 },
+      { key:"w",   label:"桌宽（cm）", def:60 },
+      { key:"h",   label:"桌高（cm）", def:75 },
+    ],
+    calc: b => ({ h: Math.round(b.height * 0.45) }),   // 坐姿桌高 ≈ 身高 × 0.45
+  },
+
+  lDesk: {
+    name:"L 形桌", tagline:"桌面不够，往角落要", group:"工作学习",
+    details:[
+      { key:"back",  label:"背板", type:"toggle", def:false },
+      { key:"cable", label:"走线孔", type:"toggle", def:true },
+    ],
+    bodyAsks:[ { key:"height", label:"身高（cm）", def:175 } ],
+    dims:[
+      { key:"len",  label:"主桌长（cm）", def:160 },
+      { key:"len2", label:"副桌长（cm）", def:80 },
+      { key:"w",    label:"桌宽（cm）", def:60 },
+      { key:"h",    label:"桌高（cm）", def:75 },
+    ],
+    calc: b => ({ h: Math.round(b.height * 0.45) }),
+  },
+
+  shelf: {
+    name:"置物架", tagline:"东西没地方放", group:"收纳",
+    details:[
+      { key:"layers", label:"层数", type:"select", options:[3,4,5,6], def:4 },
+      { key:"rim",    label:"挡边（小件不掉落）", type:"toggle", def:false },
+      { key:"rod",    label:"加挂杆", type:"toggle", def:false },
+    ],
+    bodyAsks:[ { key:"height", label:"身高（cm）", def:175 } ],
+    dims:[
+      { key:"w",     label:"架宽（cm）", def:90 },
+      { key:"d",     label:"架深（cm）", def:35 },
+      { key:"layer", label:"层高（cm）", def:35 },
+      { key:"h",     label:"总高（cm）", def:180 },
+    ],
+    calc: b => ({ h: Math.round(b.height + 15) }),   // 顶层踮脚够得着
+  },
+};
+
+/* ============================================================
+ * 二、状态 + 渲染 —— 只认识 RULES，不认识具体家具
+ * ============================================================ */
+// 当前会话的全部状态。④ 的摘要就是把它打印出来
+const state = { type:null, details:{}, mode:"body", body:{}, dims:{} };
+
+const $ = s => document.querySelector(s);
+
+// 步骤显隐 + 面包屑
+function goto(n) {
+  [1,2,3,4].forEach(i => $("#step"+i).hidden = (i !== n));
+  const names = { 1:"单品种类", 2:"细节定制", 3:"尺寸信息", 4:"方案摘要" };
+  const rule = RULES[state.type];
+  $("#crumb").innerHTML =
+    Object.entries(names).map(([i,t]) =>
+      `<span>${+i < n ? "✓" : +i === n ? "▶" : "·"} ${t}</span>`).join("　")
+    + (rule ? `　｜　已选：<b>${rule.name}</b>` : "");
+  window.scrollTo(0, 0);
+}
+
+// ① 画卡片：纯数据遍历，加单品不用改这里
+function renderCards() {
+  $("#typeGrid").innerHTML = Object.entries(RULES).map(([key, r]) => `
+    <div class="pick ${state.type===key?"on":""}" data-key="${key}">
+      <em>${r.group}</em><b>${r.name}</b><span>${r.tagline}</span>
+    </div>`).join("");
+  // 事件委托：grid 只挂一个监听器，子元素共享
+  $("#typeGrid").onclick = e => {
+    const el = e.target.closest(".pick");
+    if (el) selectType(el.dataset.key);
+  };
+}
+
+// ①→② 选定单品：初始化细节、尺寸、身材的默认值
+function selectType(key) {
+  state.type = key;
+  const r = RULES[key];
+  state.details = {};
+  r.details.forEach(d => state.details[d.key] = d.def);
+  state.body = {};
+  r.bodyAsks.forEach(b => state.body[b.key] = b.def);
+  state.dims = {};
+  r.dims.forEach(d => state.dims[d.key] = d.def);
+  renderCards(); renderDetails(); renderBody(); renderDims();
+  goto(2);
+}
+
+// ② 细节表单：toggle 画 checkbox，select 画下拉
+function renderDetails() {
+  const r = RULES[state.type];
+  $("#detailForm").innerHTML = r.details.map(d => {
+    if (d.type === "toggle") return `
+      <label class="toggle">
+        <input type="checkbox" data-dkey="${d.key}" ${state.details[d.key]?"checked":""}> ${d.label}
+      </label>`;
+    const opts = d.options.map(o =>
+      Array.isArray(o) ? `<option value="${o[0]}">${o[1]}</option>` : `<option>${o}</option>`
+    ).join("");
+    return `<div><label>${d.label}</label>
+      <select data-dkey="${d.key}">${opts}</select></div>`;
+  }).join("");
+
+  $("#detailForm").onchange = e => {
+    const k = e.target.dataset.dkey;
+    if (!k) return;
+    state.details[k] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+  };
+}
+
+// ③ 身材输入：由 bodyAsks 决定问什么
+function renderBody() {
+  $("#bodyForm").innerHTML = RULES[state.type].bodyAsks.map(b => `
+    <div><label>${b.label}</label>
+      <input type="number" data-bkey="${b.key}" value="${b.def}"></div>`).join("");
+
+  $("#bodyForm").oninput = e => {
+    const k = e.target.dataset.bkey;
+    if (k) state.body[k] = parseInt(e.target.value) || 0;
+  };
+}
+
+// ③ 尺寸输入：由 dims 决定有哪些项
+function renderDims() {
+  $("#dimForm").innerHTML = RULES[state.type].dims.map(d => `
+    <div><label>${d.label}</label>
+      <input type="number" data-mkey="${d.key}" value="${state.dims[d.key]}"></div>`).join("");
+
+  $("#dimForm").oninput = e => {
+    const k = e.target.dataset.mkey;
+    if (k) state.dims[k] = parseInt(e.target.value) || 0;
+  };
+}
+
+// 推算按钮：调规则卡里的 calc()，把结果填进尺寸输入框（用户还能手改）
+$("#calcBtn").onclick = () => {
+  const r = RULES[state.type];
+  const out = r.calc(state.body, state.details);
+  Object.assign(state.dims, out);      // 只覆盖 calc 给出的项，其余保持
+  renderDims();
+};
+
+// ③ 模式切换：身材模式显示问询+按钮，精确模式只显示尺寸输入
+document.querySelectorAll('input[name="mode"]').forEach(radio => {
+  radio.onchange = () => {
+    state.mode = radio.value;
+    $("#bodyBox").hidden = (state.mode !== "body");
+  };
+});
+
+// ④ 摘要：把状态原样打印 —— 这份 JSON 就是将来参数化引擎的输入
+$("#toStep4").onclick = () => {
+  const r = RULES[state.type];
+  $("#summary").textContent = JSON.stringify({
+    type: state.type,            // 引擎查这个 key 找到计算逻辑
+    name: r.name,
+    details: state.details,      // 床头？护栏？床下做什么？
+    dims: state.dims,            // 最终采用的尺寸（推算或手填）
+  }, null, 2);
+  goto(4);
+};
+
+$("#backTo1").onclick = () => goto(1);
+$("#backTo2").onclick = () => goto(2);
+$("#restart").onclick = () => { state.type=null; renderCards(); goto(1); };
+
+// 启动
+renderCards();
+goto(1);
+</script>
+</body>
+</html>
