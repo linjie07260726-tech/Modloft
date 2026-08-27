@@ -73,6 +73,7 @@
 <div class="card" id="step2" hidden>
   <h2>② 细节定制</h2>
   <div class="form-grid" id="detailForm"></div>
+  <button id="toStep3">下一步：尺寸信息 →</button>
   <button class="ghost" id="backTo1">← 重选家具</button>
 </div>
 
@@ -351,6 +352,7 @@ $("#toStep4").onclick = () => {
   goto(4);
 };
 
+$("#toStep3").onclick = () => goto(3);
 $("#backTo1").onclick = () => goto(1);
 $("#backTo2").onclick = () => goto(2);
 $("#restart").onclick = () => { state.type=null; renderCards(); goto(1); };
