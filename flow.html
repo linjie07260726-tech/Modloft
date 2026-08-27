@@ -3,16 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>单品定制 · 流程模拟器</title>
+<title>输入流程模拟器</title>
 <!--
   ============================================================
-  流程模拟器：演示"前面的选择决定后面的表单"这条规则链。
-  ① 点单品卡片 → ② 细节定制表单跟着变 → ③ 尺寸表单跟着变
-  → ④ 输出一份 JSON（这就是将来交给参数化引擎的东西）。
+  输入流程模拟器：只模拟"输入部分"，不做任何计算。
+  两条路线，最终都产出一份 JSON —— 将来交给参数化引擎的输入。
 
-  核心思想：所有"规则"都写在下面的 RULES 数据里，
-  渲染代码只负责照着 RULES 画表单，不认识任何具体家具。
-  加新单品 = 加一张规则卡，渲染代码一行不改。
+  单品定制：⓪ 选模式 → ① 单品种类 → ② 细节定制
+            → ③ 尺寸信息（身材推算 / 精确填） → ④ 摘要
+  全屋定制：⓪ 选模式 → F1 房间尺寸 → F2 身材条件
+            → F3 布局（平面图画矩形）→ F4 逐件细化 → F5 摘要
+
+  核心思想不变：所有规则写在 RULES / NEEDS / DIM_SPEC 数据里，
+  渲染代码只认数据、不认具体家具。加单品 = 加一张卡；
+  改尺寸的规矩（吸附、范围）= 改 DIM_SPEC。
   ============================================================
 -->
 <style>
@@ -47,6 +51,20 @@
   /* toggle 行：label 和 checkbox 横排 */
   .toggle { display:flex; align-items:center; gap:8px; font-size:14px; margin:6px 0; }
   .toggle input { width:auto; }
+  /* 全屋模式：一个需求一张小卡 */
+  .need { border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:10px; }
+  .need.off { opacity:.45; }
+  .need-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+  .need-head b { font-size:15px; }
+  .need-head select { width:auto; }
+  .need-dims { display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; }
+  /* 平面图画布：viewBox 直接用 cm 当单位（1 单位 = 1cm），
+     拖拽时禁止选中文字、光标画十字，手机上 touch-action 关掉滚动抢事件 */
+  #planSvg {
+    width:100%; background:#fff; border:1px solid var(--line);
+    border-radius:8px; display:block; cursor:crosshair;
+    user-select:none; touch-action:none;
+  }
   button {
     margin-top:14px; margin-right:8px; padding:10px 16px; font-size:14px;
     color:#fff; background:var(--brand); border:none; border-radius:8px; cursor:pointer;
@@ -60,14 +78,28 @@
 </head>
 <body>
 
-<h1>🔩 单品定制 · 流程模拟器</h1>
-<div class="sub">点一遍走完全流程 —— 演示规则链：选了什么，后面就问什么</div>
+<h1>🔩 输入流程模拟器</h1>
+<div class="sub">只负责输入部分的模拟：收集完条件，输出一份交给引擎的 JSON。不算结构、不出 BOM</div>
 <div class="crumb" id="crumb"></div>
 
-<!-- 四个步骤各占一个 card，走到哪步显示哪步 -->
-<div class="card" id="step1">
+<!-- ============ 步骤 ⓪：选定制方式（两条路线的岔口）============ -->
+<div class="card" id="step0">
+  <h2>⓪ 定制方式</h2>
+  <div class="grid" id="modeGrid">
+    <div class="pick" data-mode="single">
+      <b>单品定制</b><span>只要一件：选家具 → 定细节 → 定尺寸</span>
+    </div>
+    <div class="pick" data-mode="full">
+      <b>全屋定制</b><span>整间房：房间 → 身材 → 画布局 → 逐件细化</span>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 单品定制路线 ============ -->
+<div class="card" id="step1" hidden>
   <h2>① 单品种类</h2>
   <div class="grid" id="typeGrid"></div>
+  <button class="ghost" id="backTo0a">← 换定制方式</button>
 </div>
 
 <div class="card" id="step2" hidden>
@@ -79,6 +111,7 @@
 
 <div class="card" id="step3" hidden>
   <h2>③ 尺寸信息</h2>
+  <div class="sub" style="margin-top:-6px">尺寸会自动吸附圆整（默认 5cm 一档）并卡在合理范围内，输入歪了没关系</div>
   <div class="form-grid">
     <label class="toggle"><input type="radio" name="mode" value="body" checked> 身材推算（系统帮你算）</label>
     <label class="toggle"><input type="radio" name="mode" value="exact"> 精确尺寸（你直接填）</label>
@@ -88,7 +121,7 @@
     <div class="form-grid" id="bodyForm" style="margin-top:12px"></div>
     <button class="ghost" id="calcBtn">按身材推算尺寸</button>
   </div>
-  <div id="dimBox">
+  <div id="dimBox" hidden>
     <div class="form-grid" id="dimForm" style="margin-top:12px"></div>
   </div>
   <button id="toStep4">生成方案摘要 ↓</button>
@@ -101,16 +134,67 @@
   <button class="ghost" id="restart">重新开始</button>
 </div>
 
+<!-- ============ 全屋定制路线 ============ -->
+<div class="card" id="stepF1" hidden>
+  <h2>F1 房间尺寸</h2>
+  <!-- 两个正式入口都还没做，先摆卡片占位（点不动是故意的） -->
+  <div class="grid">
+    <div class="pick" style="cursor:default; opacity:.55">
+      <b>手动绘制</b><em>开发中</em><span>画墙线圈出房间</span>
+    </div>
+    <div class="pick" style="cursor:default; opacity:.55">
+      <b>上传平面图识别</b><em>开发中</em><span>传图自动量出尺寸</span>
+    </div>
+  </div>
+  <!-- 临时通道：上面两个做好之前，先直接填数字把流程跑通 -->
+  <div class="sub" style="margin:12px 0 0">临时通道：绘制 / 识别做好前，先直接填数</div>
+  <div class="form-grid" id="roomForm"></div>
+  <button id="toF2">下一步：身材条件 →</button>
+  <button class="ghost" id="backTo0b">← 换定制方式</button>
+</div>
+
+<div class="card" id="stepF2" hidden>
+  <h2>F2 身材条件</h2>
+  <div class="sub" style="margin-top:-6px">不填就用默认值，填了以你为准</div>
+  <div class="form-grid" id="bodyFForm"></div>
+  <button id="toF3">下一步：布局 →</button>
+  <button class="ghost" id="backToF1">← 改房间尺寸</button>
+</div>
+
+<div class="card" id="stepF3" hidden>
+  <h2>F3 布局</h2>
+  <div class="sub" style="margin-top:-6px">在平面图上拖一个矩形 = 一件家具（坐标自动按 5cm 吸附；画完填性质，离墙距离可改）</div>
+  <svg id="planSvg"></svg>
+  <div id="rectList" style="margin-top:12px"></div>
+  <button id="toF4">下一步：细化 →</button>
+  <button class="ghost" id="backToF2">← 改身材条件</button>
+</div>
+
+<div class="card" id="stepF4" hidden>
+  <h2>F4 细化</h2>
+  <div class="sub" style="margin-top:-6px">每件家具单独出选项：细节 + 尺寸（默认值由身材推算），改占地尺寸会同步回平面图</div>
+  <div id="refineList"></div>
+  <button id="toF5">生成方案摘要 ↓</button>
+  <button class="ghost" id="backToF3">← 改布局</button>
+</div>
+
+<div class="card" id="stepF5" hidden>
+  <h2>F5 方案摘要（交给引擎的输入）</h2>
+  <pre id="summaryF"></pre>
+  <button class="ghost" id="restartF">重新开始</button>
+</div>
+
 <script>
 /* ============================================================
  * 一、规则数据 —— "表达规则"的本体
  * ------------------------------------------------------------
- * 每种单品一张规则卡，五个字段：
+ * 每种单品一张规则卡，六个字段：
  *   name/tagline  卡片上的名字和一句话
  *   group         需求分区（睡觉 / 工作学习 / 收纳）
  *   details       细节定制项（toggle 或 select）
  *   bodyAsks      身材推算要问用户的信息
  *   dims          尺寸项（精确模式直接填这些）
+ *   footprint     占地的两个尺寸 key —— 全屋模式平面图上的矩形大小跟它俩同步
  *   calc          推算函数：身材 + 细节 → 尺寸默认值
  * ============================================================ */
 const RULES = {
@@ -126,6 +210,7 @@ const RULES = {
       { key:"w",   label:"床宽（cm）", def:100 },
       { key:"h",   label:"床架离地（cm）", def:30 },
     ],
+    footprint:["len","w"],           // 占地 = 床长 × 床宽
     calc: b => ({ len: b.height + 15 }),   // 躺平不顶头：身高 + 15
   },
 
@@ -148,6 +233,7 @@ const RULES = {
       { key:"clear", label:"床下净空（cm）", def:101 },
       { key:"roomH", label:"房间净高（cm）", def:280 },
     ],
+    footprint:["len","w"],           // 占地 = 床长 × 床宽
     calc: (b, d) => {
       // 净空由姿态决定 —— 细节定制里选的"床下做什么"在这里生效
       const clear = d.under === "lie" ? 95
@@ -174,6 +260,7 @@ const RULES = {
       { key:"clear", label:"床下净空（cm）", def:101 },
       { key:"roomH", label:"房间净高（cm）", def:280 },
     ],
+    footprint:["len","w"],           // 占地 = 床长 × 床宽
     calc: (b, d) => {
       const clear = d.under === "recline" ? Math.round(b.height * 0.62 + 8)
                                           : Math.round(b.height * 0.52 + 10);
@@ -194,6 +281,7 @@ const RULES = {
       { key:"w",   label:"桌宽（cm）", def:60 },
       { key:"h",   label:"桌高（cm）", def:75 },
     ],
+    footprint:["len","w"],           // 占地 = 桌长 × 桌宽
     calc: b => ({ h: Math.round(b.height * 0.45) }),   // 坐姿桌高 ≈ 身高 × 0.45
   },
 
@@ -210,6 +298,7 @@ const RULES = {
       { key:"w",    label:"桌宽（cm）", def:60 },
       { key:"h",    label:"桌高（cm）", def:75 },
     ],
+    footprint:["len","w"],           // 占地按主桌算（L 形的外框，副桌先不占位）
     calc: b => ({ h: Math.round(b.height * 0.45) }),
   },
 
@@ -227,29 +316,127 @@ const RULES = {
       { key:"layer", label:"层高（cm）", def:35 },
       { key:"h",     label:"总高（cm）", def:180 },
     ],
+    footprint:["w","d"],             // 占地 = 架宽 × 架深
     calc: b => ({ h: Math.round(b.height + 15) }),   // 顶层踮脚够得着
   },
 };
 
+/* 全屋模式的需求表：一个需求 → 可选单品（都指向规则卡）。
+   加新需求或给需求加候选家具，只改这张表 */
+const NEEDS = {
+  sleep: { label:"睡觉",     picks:["loft","loftDesk","bed"], def:"loft" },
+  work:  { label:"工作学习", picks:["desk","lDesk"],          def:"desk" },
+  store: { label:"收纳",     picks:["shelf"],                 def:"shelf" },
+};
+
 /* ============================================================
- * 二、状态 + 渲染 —— 只认识 RULES，不认识具体家具
+ * 尺寸规格表 DIM_SPEC —— 专门控制"尺寸的规矩"
+ * ------------------------------------------------------------
+ * 每个尺寸项可以有三条规矩（都是可选的，不写就用全局默认）：
+ *   snap      吸附步长：输入 203 自动圆成 205。
+ *             画图画歪了、手滑多敲一位都不怕，落库的都是整数
+ *   min / max 合理范围：填出界的数自动拉回来。
+ *             防止出现 0 或 9999 这种废数据流进引擎
+ *   提示      def（默认值）不在这里管 —— 还在规则卡的 dims 里
+ *
+ * 查表规则：先查 DIM_SPEC[哪件家具][哪个尺寸]，
+ *           查不到 → 用下面的全局默认（5cm 吸附、不限范围）。
+ * 所以想精细控制哪个尺寸，就往表里加一条；不加也不影响运行。
  * ============================================================ */
-// 当前会话的全部状态。④ 的摘要就是把它打印出来
+const SNAP_DEFAULT = 5;   // 全局吸附步长：没单独配置的尺寸一律按 5cm 圆整
+
+const DIM_SPEC = {
+  /* 举例：高架床的"床下净空"想卡严一点，就照这个格式写一条。
+     以后其他家具、其他尺寸往这里慢慢加 */
+  loft: {
+    clear: { min: 60, max: 200, snap: 5 },   // 净空至少能坐人，最多别顶到楼板
+  },
+};
+
+/* ---------- 尺寸的唯一入口：所有尺寸落库前都过这一道 ----------
+ * 不管尺寸从哪来（手填 / 身材推算 / 将来绘图画出来），
+ * 都调 applySpec() 统一吸附 + 限界。改规矩只改上面那张表，这里永远不动 */
+function snapVal(v, step) {                  // 四舍五入到 step 的倍数
+  return Math.round(v / step) * step;
+}
+function getSpec(type, key) {                // 查规格：细表没有就给全局默认
+  return Object.assign(
+    { snap: SNAP_DEFAULT },
+    DIM_SPEC[type] && DIM_SPEC[type][key]
+  );
+}
+function applySpec(type, key, v) {           // 吸附 → 卡范围，返回规矩内的数
+  const s = getSpec(type, key);
+  let out = snapVal(v, s.snap);
+  if (s.min != null && out < s.min) out = s.min;
+  if (s.max != null && out > s.max) out = s.max;
+  return out;
+}
+
+/* ============================================================
+ * 二、状态 + 渲染 —— 只认识 RULES / NEEDS，不认识具体家具
+ * ============================================================ */
+
+// 单品路线的状态
 const state = { type:null, details:{}, mode:"body", body:{}, dims:{} };
+
+// 全屋路线的状态：房间 + 身材 + 画上去的每件家具
+const full = {
+  room:  { L:400, W:330, H:280 },    // 房间长 / 宽 / 净高（cm）
+  body:  { height:null, sitH:null, sitD:null, weight:null },  // null = 没填，推算时用默认
+  layout: [],                        // 每个矩形 = 一件家具
+};
+let rectSeq = 0;   // 矩形编号，只增不减（删了也不复用，防止索引混乱）
+
+// 身材字段表：问什么、默认多少，都在这张表里管（加一项就多问一个）
+const BODY_FIELDS = [
+  { key:"height", label:"身高（cm）", def:175 },
+  { key:"sitH",   label:"坐高（cm）", def:90 },
+  { key:"sitD",   label:"坐深（cm）", def:45 },
+  { key:"weight", label:"体重（kg）", def:65 },
+];
+
+// 性质 → 平面图上的底色（纯视觉区分，认颜色不认家具）
+const NATURE_FILL = { sleep:"#ffd8a8", work:"#a5d8ff", store:"#b2f2bb" };
 
 const $ = s => document.querySelector(s);
 
-// 步骤显隐 + 面包屑
-function goto(n) {
-  [1,2,3,4].forEach(i => $("#step"+i).hidden = (i !== n));
-  const names = { 1:"单品种类", 2:"细节定制", 3:"尺寸信息", 4:"方案摘要" };
-  const rule = RULES[state.type];
-  $("#crumb").innerHTML =
-    Object.entries(names).map(([i,t]) =>
-      `<span>${+i < n ? "✓" : +i === n ? "▶" : "·"} ${t}</span>`).join("　")
-    + (rule ? `　｜　已选：<b>${rule.name}</b>` : "");
+/* ---------- 步骤切换 ---------- */
+// 两条路线各自的步骤名，面包屑和显隐都从这查
+const STEPS = {
+  single: { ids:["step1","step2","step3","step4"], names:["单品种类","细节定制","尺寸信息","方案摘要"] },
+  full:   { ids:["stepF1","stepF2","stepF3","stepF4","stepF5"], names:["房间尺寸","身材条件","布局","细化","方案摘要"] },
+};
+
+// show("single", 2) = 单品路线第 3 步；show(null) = 回到 ⓪ 选模式
+function show(mode, i) {
+  $("#step0").hidden = !!mode;
+  Object.values(STEPS).forEach(v => v.ids.forEach(id => $("#"+id).hidden = true));
+  let crumb;
+  if (!mode) {
+    crumb = `<b>⓪ 定制方式</b>`;
+  } else {
+    $("#"+STEPS[mode].ids[i]).hidden = false;
+    crumb = STEPS[mode].names.map((t, k) =>
+      `<span>${k < i ? "✓" : k === i ? "▶" : "·"} ${t}</span>`).join("　");
+    const zh = mode === "single" ? "单品定制" : "全屋定制";
+    crumb = `<span>模式：<b>${zh}</b></span>　` + crumb;
+  }
+  $("#crumb").innerHTML = crumb;
   window.scrollTo(0, 0);
 }
+
+/* ---------- ⓪ 模式选择 ---------- */
+$("#modeGrid").onclick = e => {
+  const el = e.target.closest(".pick");
+  if (!el) return;
+  if (el.dataset.mode === "single") { renderCards(); show("single", 0); }
+  else { renderRoom(); show("full", 0); }
+};
+
+/* ============================================================
+ * 单品定制路线（和原来一致）
+ * ============================================================ */
 
 // ① 画卡片：纯数据遍历，加单品不用改这里
 function renderCards() {
@@ -275,7 +462,7 @@ function selectType(key) {
   state.dims = {};
   r.dims.forEach(d => state.dims[d.key] = d.def);
   renderCards(); renderDetails(); renderBody(); renderDims();
-  goto(2);
+  show("single", 1);
 }
 
 // ② 细节表单：toggle 画 checkbox，select 画下拉
@@ -287,7 +474,8 @@ function renderDetails() {
         <input type="checkbox" data-dkey="${d.key}" ${state.details[d.key]?"checked":""}> ${d.label}
       </label>`;
     const opts = d.options.map(o =>
-      Array.isArray(o) ? `<option value="${o[0]}">${o[1]}</option>` : `<option>${o}</option>`
+      Array.isArray(o) ? `<option value="${o[0]}" ${state.details[d.key]===o[0]?"selected":""}>${o[1]}</option>`
+                       : `<option ${state.details[d.key]==o?"selected":""}>${o}</option>`
     ).join("");
     return `<div><label>${d.label}</label>
       <select data-dkey="${d.key}">${opts}</select></div>`;
@@ -314,22 +502,32 @@ function renderBody() {
 
 // ③ 尺寸输入：由 dims 决定有哪些项
 function renderDims() {
-  $("#dimForm").innerHTML = RULES[state.type].dims.map(d => `
-    <div><label>${d.label}</label>
-      <input type="number" data-mkey="${d.key}" value="${state.dims[d.key]}"></div>`).join("");
+  $("#dimForm").innerHTML = RULES[state.type].dims.map(d => {
+    // 规格里写明了吸附步长的，在标签上提示出来（比如"5cm 一档"）
+    const s = getSpec(state.type, d.key);
+    const tip = s.snap >= 5 ? `（${s.snap}cm 一档）` : "";
+    return `
+    <div><label>${d.label}${tip}</label>
+      <input type="number" data-mkey="${d.key}" value="${state.dims[d.key]}"></div>`;
+  }).join("");
 
+  // 敲数字时只存不纠正，不打断输入
   $("#dimForm").oninput = e => {
     const k = e.target.dataset.mkey;
     if (k) state.dims[k] = parseInt(e.target.value) || 0;
   };
+  // 光标离开时的吸附监听不在这里挂 —— 见文件底部"一次性初始化"
 }
 
 // 推算按钮：调规则卡里的 calc()，把结果填进尺寸输入框（用户还能手改）
+// 推算完顺便把尺寸框亮出来 —— 让用户直接在结果上微调，不用先切模式
 $("#calcBtn").onclick = () => {
   const r = RULES[state.type];
   const out = r.calc(state.body, state.details);
-  Object.assign(state.dims, out);      // 只覆盖 calc 给出的项，其余保持
+  // 推算结果也要过规格表：公式算出 187.4 → 落库 185，和其他入口同一条规矩
+  for (const k in out) state.dims[k] = applySpec(state.type, k, out[k]);
   renderDims();
+  $("#dimBox").hidden = false;
 };
 
 // ③ 模式切换：身材模式显示问询+按钮，精确模式只显示尺寸输入
@@ -337,6 +535,7 @@ document.querySelectorAll('input[name="mode"]').forEach(radio => {
   radio.onchange = () => {
     state.mode = radio.value;
     $("#bodyBox").hidden = (state.mode !== "body");
+    $("#dimBox").hidden = (state.mode === "body");
   };
 });
 
@@ -344,22 +543,334 @@ document.querySelectorAll('input[name="mode"]').forEach(radio => {
 $("#toStep4").onclick = () => {
   const r = RULES[state.type];
   $("#summary").textContent = JSON.stringify({
+    mode: "single",
     type: state.type,            // 引擎查这个 key 找到计算逻辑
     name: r.name,
     details: state.details,      // 床头？护栏？床下做什么？
     dims: state.dims,            // 最终采用的尺寸（推算或手填）
   }, null, 2);
-  goto(4);
+  show("single", 3);
 };
 
-$("#toStep3").onclick = () => goto(3);
-$("#backTo1").onclick = () => goto(1);
-$("#backTo2").onclick = () => goto(2);
-$("#restart").onclick = () => { state.type=null; renderCards(); goto(1); };
+$("#toStep3").onclick = () => show("single", 2);
+$("#backTo1").onclick = () => show("single", 0);
+$("#backTo2").onclick = () => show("single", 1);
+$("#backTo0a").onclick = () => show(null);
+$("#restart").onclick = () => show(null);
+
+/* ============================================================
+ * 全屋定制路线
+ * ------------------------------------------------------------
+ * 输入思路：先量房间（F1）→ 再量人（F2，不填用默认）
+ * → 在平面图上画矩形当家具（F3，画哪算哪，离墙可调）
+ * → 每件家具单独细化（F4，细节 + 尺寸）→ 摘要（F5）。
+ * 性质 → 单品的映射还是查 NEEDS 表，规则卡整套复用单品那套。
+ * ============================================================ */
+
+// F1 房间尺寸：正式入口（绘制/识别）还没做，先用"直接填数字"兜底
+function renderRoom() {
+  $("#roomForm").innerHTML = [
+    { key:"L", label:"房间长（cm）" },
+    { key:"W", label:"房间宽（cm）" },
+    { key:"H", label:"房间净高（cm）" },
+  ].map(f => `
+    <div><label>${f.label}</label>
+      <input type="number" data-rk="${f.key}" value="${full.room[f.key]}"></div>`).join("");
+
+  $("#roomForm").oninput = e => {
+    const k = e.target.dataset.rk;
+    if (k) full.room[k] = parseInt(e.target.value) || 0;
+  };
+}
+
+// F2 身材条件：不填的项推算时自动用默认值（见 bodyVal）
+function renderBodyF() {
+  $("#bodyFForm").innerHTML = BODY_FIELDS.map(f => `
+    <div><label>${f.label}（不填默认 ${f.def}）</label>
+      <input type="number" data-fkey="${f.key}" placeholder="${f.def}"
+        value="${full.body[f.key] ?? ""}"></div>`).join("");
+
+  $("#bodyFForm").oninput = e => {
+    const k = e.target.dataset.fkey;
+    if (!k) return;
+    const v = parseInt(e.target.value);
+    full.body[k] = isNaN(v) ? null : v;   // 清空输入框 = 回到默认值
+  };
+}
+
+// 推算用的身材：把没填的项补上默认值，一次性算好给各处用
+function bodyVal() {
+  const out = {};
+  BODY_FIELDS.forEach(f => out[f.key] = full.body[f.key] ?? f.def);
+  return out;
+}
+
+/* ---------- F3 布局编辑器：平面图上拖矩形 ---------- */
+
+// 鼠标位置换算成平面图坐标（cm），顺手按 5cm 吸附 —— 画歪了也落在格点上
+function svgPt(e) {
+  const r = $("#planSvg").getBoundingClientRect();
+  return {
+    x: snapVal((e.clientX - r.left) / r.width * full.room.L, SNAP_DEFAULT),
+    y: snapVal((e.clientY - r.top) / r.height * full.room.W, SNAP_DEFAULT),
+  };
+}
+
+const SIDE_ZH = { left:"左墙", right:"右墙", top:"上墙", bottom:"下墙" };
+
+// 按记录的"贴哪面墙 + 留多大缝"重新摆矩形
+function applyGap(it) {
+  if (it.side === "left")   it.x = it.gap;
+  if (it.side === "right")  it.x = full.room.L - it.gap - it.w;
+  if (it.side === "top")    it.y = it.gap;
+  if (it.side === "bottom") it.y = full.room.W - it.gap - it.h;
+}
+
+// 给矩形分配性质/单品后，初始化细节和尺寸：
+// 默认值 + 身材推算，过规格表；占地两个尺寸以画出来的矩形为准 —— 用户画的意图优先
+function initItem(it) {
+  const r = RULES[it.type];
+  it.details = {};
+  r.details.forEach(d => it.details[d.key] = d.def);
+  it.dims = {};
+  r.dims.forEach(d => it.dims[d.key] = applySpec(it.type, d.key, d.def));
+  const out = r.calc(bodyVal(), it.details);
+  for (const k in out) it.dims[k] = applySpec(it.type, k, out[k]);
+  r.footprint.forEach((k, i) => it.dims[k] = i === 0 ? it.w : it.h);
+}
+
+// 画布：已画的矩形 + 名字标签 + 一块"正在拖"的预览虚线框
+function renderPlan() {
+  const svg = $("#planSvg");
+  svg.setAttribute("viewBox", `0 0 ${full.room.L} ${full.room.W}`);
+  svg.style.aspectRatio = `${full.room.L} / ${full.room.W}`;   // 保证画布比例 = 房间比例
+  const fs = Math.max(full.room.L, full.room.W) / 60;          // 文字随房间大小缩放
+  svg.innerHTML = full.layout.map(it => {
+    const fill = it.nature ? NATURE_FILL[it.nature] : "#e9ecef";
+    const label = it.type ? RULES[it.type].name : "未分配";
+    return `
+    <rect data-rid="${it.id}" x="${it.x}" y="${it.y}" width="${it.w}" height="${it.h}"
+      rx="3" fill="${fill}" stroke="${it.nature ? "#495057" : "#adb5bd"}" stroke-width="2"></rect>
+    <text x="${it.x + it.w/2}" y="${it.y + it.h/2}" font-size="${fs}"
+      text-anchor="middle" dominant-baseline="middle" fill="#343a40"
+      pointer-events="none">${label}</text>`;
+  }).join("") + `
+    <rect id="draftRect" fill="rgba(232,89,12,.12)" stroke="#e8590c"
+      stroke-width="2" stroke-dasharray="6 4" hidden></rect>`;
+}
+
+// 矩形清单：填性质、换单品、调离墙、删除
+function renderRectList() {
+  $("#rectList").innerHTML = full.layout.map((it, i) => {
+    const nOpts = `<option value="">选择性质…</option>` + Object.entries(NEEDS).map(([nk, n]) =>
+      `<option value="${nk}" ${it.nature === nk ? "selected" : ""}>${n.label}</option>`).join("");
+    const tOpts = it.nature ? NEEDS[it.nature].picks.map(k =>
+      `<option value="${k}" ${it.type === k ? "selected" : ""}>${RULES[k].name}</option>`).join("") : "";
+    return `
+    <div class="need">
+      <div class="need-head">
+        <b>#${i + 1} ${it.type ? RULES[it.type].name : "未分配"}</b>
+        <select data-rn="${it.id}">${nOpts}</select>
+        ${it.nature ? `<select data-rt="${it.id}">${tOpts}</select>` : ""}
+        <label style="font-size:13px">离${SIDE_ZH[it.side]}
+          <input type="number" data-rg="${it.id}" value="${it.gap}" style="width:60px"> cm</label>
+        <button class="ghost" data-rdel="${it.id}" style="margin:0">✕</button>
+      </div>
+      <div class="sub" style="margin:0">占地 ${it.w} × ${it.h} cm，下一步可细化</div>
+    </div>`;
+  }).join("") || `<div class="sub">还没画东西 —— 在上面的平面图里拖一个矩形</div>`;
+
+  // 下拉和数字输入走 change（提交时才触发）
+  $("#rectList").onchange = e => {
+    const t = e.target;
+    if (t.dataset.rn !== undefined) {          // 填性质 → 自动带上默认单品
+      const it = full.layout.find(i => i.id === +t.dataset.rn);
+      it.nature = t.value || null;
+      it.type = it.nature ? NEEDS[it.nature].def : null;
+      if (it.type) initItem(it);
+    } else if (t.dataset.rt !== undefined) {   // 同性质内换单品
+      const it = full.layout.find(i => i.id === +t.dataset.rt);
+      it.type = t.value;
+      initItem(it);
+    } else if (t.dataset.rg !== undefined) {   // 改离墙距离 → 重摆位置
+      const it = full.layout.find(i => i.id === +t.dataset.rg);
+      it.gap = Math.max(0, Math.min(100, parseInt(t.value) || 0));
+      applyGap(it);
+    } else return;
+    renderPlan(); renderRectList();
+  };
+
+  // 删除按钮走 click（按钮不触发 change 事件）
+  $("#rectList").onclick = e => {
+    const del = e.target.dataset.rdel;
+    if (!del) return;
+    full.layout = full.layout.filter(i => i.id !== +del);
+    renderPlan(); renderRectList();
+  };
+}
+
+/* ---------- 拖拽画矩形：按下记起点 → 拖动出预览 → 松手落地 ---------- */
+let drawing = null;   // { x0, y0, x1, y1 } —— 正在拖的这一笔
+const planSvg = $("#planSvg");
+
+planSvg.addEventListener("mousedown", e => {
+  if (e.target.dataset.rid) return;   // 点在已有矩形上：不新画
+  const p = svgPt(e);
+  drawing = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+});
+planSvg.addEventListener("mousemove", e => {
+  if (!drawing) return;
+  const p = svgPt(e);
+  drawing.x1 = p.x; drawing.y1 = p.y;
+  const dr = $("#draftRect");
+  dr.hidden = false;
+  dr.setAttribute("x", Math.min(drawing.x0, drawing.x1));
+  dr.setAttribute("y", Math.min(drawing.y0, drawing.y1));
+  dr.setAttribute("width", Math.abs(drawing.x1 - drawing.x0));
+  dr.setAttribute("height", Math.abs(drawing.y1 - drawing.y0));
+});
+planSvg.addEventListener("mouseup", () => {
+  if (!drawing) return;
+  commitRect();
+  drawing = null;
+  renderPlan(); renderRectList();
+});
+planSvg.addEventListener("mouseleave", () => {
+  drawing = null;                      // 拖出画布就放弃这一笔
+  const dr = $("#draftRect");
+  if (dr) dr.hidden = true;
+});
+
+// 松手落地：太小（<20cm）当作误触丢掉；
+// 够大就自动认一面离得最近的墙，先贴过去留 5cm 缝
+function commitRect() {
+  const x = Math.min(drawing.x0, drawing.x1), y = Math.min(drawing.y0, drawing.y1);
+  const w = Math.abs(drawing.x1 - drawing.x0), h = Math.abs(drawing.y1 - drawing.y0);
+  $("#draftRect").hidden = true;
+  if (w < 20 || h < 20) return;
+  const dWalls = {
+    left: x, right: full.room.L - x - w,
+    top: y, bottom: full.room.W - y - h,
+  };
+  const side = Object.keys(dWalls).sort((a, b) => dWalls[a] - dWalls[b])[0];
+  const it = { id: ++rectSeq, x, y, w, h, side, gap: 5,
+               nature: null, type: null, details: {}, dims: {} };
+  applyGap(it);
+  full.layout.push(it);
+}
+
+/* ---------- F4 细化：每件家具一段 —— 细节表单 + 尺寸表单（规则卡同款） ---------- */
+function renderRefine() {
+  $("#refineList").innerHTML = full.layout.filter(it => it.type).map(it => {
+    const r = RULES[it.type];
+    const det = r.details.map(d => {
+      if (d.type === "toggle") return `
+        <label class="toggle"><input type="checkbox" data-rid="${it.id}" data-dkey="${d.key}"
+          ${it.details[d.key] ? "checked" : ""}> ${d.label}</label>`;
+      const opts = d.options.map(o => Array.isArray(o)
+        ? `<option value="${o[0]}" ${it.details[d.key] === o[0] ? "selected" : ""}>${o[1]}</option>`
+        : `<option ${it.details[d.key] == o ? "selected" : ""}>${o}</option>`).join("");
+      return `<div><label>${d.label}</label>
+        <select data-rid="${it.id}" data-dkey="${d.key}">${opts}</select></div>`;
+    }).join("");
+    const dim = r.dims.map(d => {
+      const s = getSpec(it.type, d.key);
+      const tip = s.snap >= 5 ? `（${s.snap}cm 一档）` : "";
+      return `<div><label>${d.label}${tip}</label>
+        <input type="number" data-rid="${it.id}" data-mkey="${d.key}" value="${it.dims[d.key]}"></div>`;
+    }).join("");
+    const num = full.layout.filter(i => i.type).indexOf(it) + 1;
+    return `
+    <div class="need">
+      <div class="need-head"><b>#${num} ${r.name}（${NEEDS[it.nature].label}）</b></div>
+      <div class="form-grid">${det}</div>
+      <div class="form-grid" style="margin-top:10px">${dim}</div>
+    </div>`;
+  }).join("") || `<div class="sub">布局里没有分配性质的家具，回去补</div>`;
+
+  // 细节变化 → 重跑推算（细节能影响尺寸，如"床下做什么"决定净空）
+  $("#refineList").onchange = e => {
+    const t = e.target, k = t.dataset.dkey, id = t.dataset.rid;
+    if (!k) return;
+    const it = full.layout.find(i => i.id === +id);
+    it.details[k] = t.type === "checkbox" ? t.checked : t.value;
+    const out = RULES[it.type].calc(bodyVal(), it.details);
+    for (const dk in out) it.dims[dk] = applySpec(it.type, dk, out[dk]);
+    renderRefine();
+  };
+  // 尺寸输入：敲时只存不打断；失焦吸附的监听挂在文件底部（一次性初始化）
+  $("#refineList").oninput = e => {
+    const t = e.target, k = t.dataset.mkey, id = t.dataset.rid;
+    if (!k) return;
+    full.layout.find(i => i.id === +id).dims[k] = parseInt(t.value) || 0;
+  };
+}
+
+// F5 摘要：房间 + 身材 + 每件家具的落位和参数 —— 引擎按这个做布局校验
+$("#toF5").onclick = () => {
+  $("#summaryF").textContent = JSON.stringify({
+    mode: "full",
+    room: full.room,        // 房间长宽净高（布局校验的边界）
+    body: bodyVal(),        // 身材（没填的项已补默认值）
+    items: full.layout.filter(i => i.type).map(it => ({
+      nature: it.nature,    // 需求性质（睡觉 / 工作学习 / 收纳）
+      type: it.type,        // 引擎查这个 key 找到计算逻辑
+      name: RULES[it.type].name,
+      pos:  { x: it.x, y: it.y },            // 平面图坐标（cm，左上角为原点）
+      size: { w: it.w, h: it.h },            // 占地大小
+      wall: { side: it.side, gap: it.gap },  // 贴哪面墙、留多大缝
+      details: it.details,                   // 细节选择（护栏、爬梯……）
+      dims: it.dims,                         // 最终采用的尺寸
+    })),
+  }, null, 2);
+  show("full", 4);
+};
+
+$("#toF2").onclick = () => { renderBodyF(); show("full", 1); };
+$("#toF3").onclick = () => { renderPlan(); renderRectList(); show("full", 2); };
+$("#toF4").onclick = () => { renderRefine(); show("full", 3); };
+$("#backToF1").onclick = () => show("full", 0);
+$("#backToF2").onclick = () => show("full", 1);
+$("#backToF3").onclick = () => show("full", 2);
+$("#backTo0b").onclick = () => show(null);
+$("#restartF").onclick = () => {
+  // 重新开始要清掉画布，否则上次的矩形会残留
+  full.layout = [];
+  show(null);
+};
+
+/* ---------- 一次性初始化：失焦吸附监听 ----------
+ * 为什么用 addEventListener 而不是 onfocusout 属性：
+ * 1. onfocusout 属性写法部分环境不支持（兼容性坑），addEventListener 到处可靠
+ * 2. 渲染函数每次重画都会执行，用属性赋值可覆盖没问题，
+ *    但 addEventListener 会越挂越多 —— 所以挪到这里只挂一次
+ * focusout 事件会冒泡，容器挂一个监听就能接住所有子输入框 */
+
+// 单品路线 ③ 的尺寸输入：失焦 → 吸附 + 卡范围
+$("#dimForm").addEventListener("focusout", e => {
+  const k = e.target.dataset.mkey;
+  if (!k) return;
+  const v = applySpec(state.type, k, parseInt(e.target.value) || state.dims[k]);
+  state.dims[k] = v;
+  e.target.value = v;   // 纠正后的数写回输入框，用户看得见
+});
+
+// 全屋路线 F4 的尺寸输入：失焦 → 吸附 + 卡范围 + 占地同步回平面图
+$("#refineList").addEventListener("focusout", e => {
+  const t = e.target, k = t.dataset.mkey, id = t.dataset.rid;
+  if (!k) return;
+  const it = full.layout.find(i => i.id === +id);
+  const v = applySpec(it.type, k, parseInt(t.value) || it.dims[k]);
+  it.dims[k] = v; t.value = v;
+  // 改的是占地尺寸 → 平面图上的矩形跟着变，位置按"墙 + 缝"重摆
+  const fp = RULES[it.type].footprint;
+  if (fp[0] === k) it.w = v;
+  if (fp[1] === k) it.h = v;
+  if (fp.includes(k)) { applyGap(it); renderPlan(); }
+});
 
 // 启动
-renderCards();
-goto(1);
+show(null);
 </script>
 </body>
 </html>
